@@ -1,0 +1,5 @@
+{
+    "appService.preDeployTask": "publish-release",
+    "appService.deploySubpath": "bin/Release/net8.0/publish",
+    "appService.defaultWebAppToDeploy": "/subscriptions/198cd8e7-3b70-43e2-bc63-82b0acb2176e/resourceGroups/poc-web-callee_group/providers/Microsoft.Web/sites/poc-web-callee"
+}
