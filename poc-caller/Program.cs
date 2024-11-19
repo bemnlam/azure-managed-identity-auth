@@ -12,11 +12,16 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Azure
-builder.Services.AddSingleton<TokenCredential>(ServiceProvider => {
-    return new ChainedTokenCredential(
-        new ManagedIdentityCredential(),
-        new EnvironmentCredential()
-    );
+builder.Services.AddSingleton<TokenCredential>(serviceProvider => {
+    var webHostEnvironment = serviceProvider.GetService<IWebHostEnvironment>();
+    if(webHostEnvironment.IsDevelopment()) {
+        return new EnvironmentCredential();   
+    }
+    var configuration = serviceProvider.GetService<IConfiguration>();
+    var managedIdentity = configuration["ManagedIdentity"];
+    return !string.IsNullOrEmpty(managedIdentity) ?
+        new ManagedIdentityCredential(clientId: managedIdentity):
+        new ManagedIdentityCredential();
 });
 
 var app = builder.Build();
@@ -37,6 +42,22 @@ var summaries = new[]
 {
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
 };
+
+app.MapGet("/weatherforcast-with-token", async (IConfiguration configuration, string token) => {
+    var requestUri = $"{configuration["CalleeApi"]}/weatherforecast";
+    try{
+        using var httpClient = new HttpClient();
+        if(!string.IsNullOrEmpty(token)) {
+            httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        }
+
+        var data = await httpClient.GetFromJsonAsync<IEnumerable<WeatherForecast>>(requestUri);
+        return new ApiResponse(data ?? [], requestUri, token, null);
+    }
+    catch(Exception ex) {
+          return new ApiResponse([], requestUri, token, ex.Message);
+    }
+});
 
 app.MapGet("/weatherforecast", async (IConfiguration configuration, TokenCredential credential, string? scope) =>
 {
@@ -60,7 +81,7 @@ app.MapGet("/weatherforecast", async (IConfiguration configuration, TokenCredent
 .WithName("GetWeatherForecast")
 .WithOpenApi();
 
-app.MapGet("/token", async (IConfiguration configuration, TokenCredential credential, string? scope) => 
+app.MapGet("/token", async (IConfiguration configuration, TokenCredential credential, string? scope="api://dea507c6-c064-4d11-9311-9cd3ebb61804/.default") => 
 {
     AccessToken token = default;
     try{
