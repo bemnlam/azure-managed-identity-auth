@@ -1,6 +1,6 @@
-@poc_callee_HostAddress = http://localhost:5251
+@poc_callee_HostAddress = https://localhost:7200
 
-GET {{poc_callee_HostAddress}}/weatherforecast/
+GET {{poc_callee_HostAddress}}/ping/
 Accept: application/json
 
 ###
