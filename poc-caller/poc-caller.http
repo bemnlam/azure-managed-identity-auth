@@ -1,6 +1,10 @@
-@poc_caller_HostAddress = http://localhost:5123
+@poc_caller_HostAddress = https://localhost:7122
 
-GET {{poc_caller_HostAddress}}/weatherforecast/
+GET {{poc_caller_HostAddress}}/access-token
+Accept: application/json
+
+###
+GET {{poc_caller_HostAddress}}/remote-ping
 Accept: application/json
 
 ###

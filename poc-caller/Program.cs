@@ -1,119 +1,114 @@
-using System.IdentityModel.Tokens.Jwt;
 using Azure.Core;
 using Azure.Identity;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.ModelBinding.Binders;
+using System.IdentityModel.Tokens.Jwt;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Azure
+#region Create Azure Token Credential
+using var listener = Azure.Core.Diagnostics.AzureEventSourceListener.CreateConsoleLogger();
 builder.Services.AddSingleton<TokenCredential>(serviceProvider => {
-    var webHostEnvironment = serviceProvider.GetService<IWebHostEnvironment>();
-    if(webHostEnvironment.IsDevelopment()) {
-        return new EnvironmentCredential();   
+    var currentEnv = serviceProvider.GetService<IWebHostEnvironment>();
+    if (currentEnv?.IsDevelopment() == true)
+    {
+        // Adjust the sequence or add other credentials as needed
+        return new ChainedTokenCredential(
+            // new ManagedIdentityCredential(),    // Azure Virtual Desktop
+            // new VisualStudioCredential(),       // Microsoft account signed in Visual Studio
+            new AzureCliCredential()            // Mac user with Azure CLI signed in
+        );
     }
-    var configuration = serviceProvider.GetService<IConfiguration>();
-    var managedIdentity = configuration["ManagedIdentity"];
-    return !string.IsNullOrEmpty(managedIdentity) ?
-        new ManagedIdentityCredential(clientId: managedIdentity):
-        new ManagedIdentityCredential();
+    else
+    {
+        // Managed Identity for Azure environments
+        if (string.IsNullOrEmpty(builder.Configuration["ManagedIdentityObjectId"]))
+        {
+            // system assigned managed identity
+            return new ManagedIdentityCredential();
+        }
+        else
+        {
+            // user assigned managed identity
+            var mi = ManagedIdentityId.FromUserAssignedObjectId(builder.Configuration["ManagedIdentityObjectId"]);
+            return new ManagedIdentityCredential(mi);
+        }
+    }
 });
+#endregion
 
 var app = builder.Build();
-
-// Configure the HTTP request pipeline.
-// if (app.Environment.IsDevelopment())
-// {
-    app.UseSwagger();
-    app.UseSwaggerUI(options => {
-        options.SwaggerEndpoint("/swagger/v1/swagger.json", "poc-caller v1");
-        options.RoutePrefix = string.Empty; // Set Swagger UI to root
-    });
-// }
+app.UseSwagger();
+app.UseSwaggerUI(options => {
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "poc-caller v1");
+    options.RoutePrefix = string.Empty;
+});
 
 app.UseHttpsRedirection();
 
-var summaries = new[]
+app.MapGet("access-token", async (IConfiguration configuration, TokenCredential credential, string? scope=null) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforcast-with-token", async (IConfiguration configuration, string token) => {
-    var requestUri = $"{configuration["CalleeApi"]}/weatherforecast";
-    try{
-        using var httpClient = new HttpClient();
-        if(!string.IsNullOrEmpty(token)) {
-            httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        }
-
-        var data = await httpClient.GetFromJsonAsync<IEnumerable<WeatherForecast>>(requestUri);
-        return new ApiResponse(data ?? [], requestUri, token, null);
+    try
+    {
+        AccessToken _token = await TokenHelper.GetToken(configuration, credential, $"{scope ?? configuration["CalleeAppRegistrationId"]}");
+        return Results.Ok(new
+        {
+            token = _token.Token,
+            decoded = new JwtSecurityTokenHandler().ReadJwtToken(_token.Token)
+        });
     }
-    catch(Exception ex) {
-          return new ApiResponse([], requestUri, token, ex.Message);
-    }
-});
-
-app.MapGet("/weatherforecast", async (IConfiguration configuration, TokenCredential credential, string? scope) =>
-{
-    var requestUri = $"{configuration["CalleeApi"]}/weatherforecast";
-    AccessToken token = default;
-    try{
-        token = await TokenHelper.GetToken(configuration, credential, scope);
-
-        using var httpClient = new HttpClient();
-        if(!string.IsNullOrEmpty(token.Token)) {
-            httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
-        }
-
-        var data = await httpClient.GetFromJsonAsync<IEnumerable<WeatherForecast>>(requestUri);
-        return new ApiResponse(data ?? [], requestUri, token.Token, null);
-    }
-    catch(Exception ex) {
-          return new ApiResponse([], requestUri, token.Token, ex.Message);
+    catch (Exception ex)
+    {
+        return Results.Problem(
+              detail: ex.Message,
+              statusCode: 500,
+              title: "Fail to get access token",
+              type: ""
+          );
     }
 })
-.WithName("GetWeatherForecast")
+.WithName("GetAccessToken")
 .WithOpenApi();
 
-app.MapGet("/token", async (IConfiguration configuration, TokenCredential credential, string? scope="api://dea507c6-c064-4d11-9311-9cd3ebb61804/.default") => 
-{
-    AccessToken token = default;
+app.MapGet("/remote-ping", async (IConfiguration configuration, TokenCredential credential, string? token=null, string? scope=null) => {
     try{
-        token = await TokenHelper.GetToken(configuration, credential, scope);
-        return new ApiResponse([], string.Empty, token.Token, string.Empty);
-    } catch(Exception ex) {
-        return new ApiResponse([], string.Empty, token.Token, ex.Message);
+        if (string.IsNullOrEmpty(token))
+        {
+            AccessToken _token = await TokenHelper.GetToken(configuration, credential, $"{scope ?? configuration["CalleeAppRegistrationId"]}");
+            token = _token.Token;
+        }
+        
+        using var httpClient = new HttpClient()
+        {
+            BaseAddress = new Uri(configuration["CalleeApi"]!)
+        };
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        var data = await httpClient.GetStringAsync("ping");
+        return Results.Ok(new
+        {
+            data,
+            token
+        });
+    }
+    catch(Exception ex) {
+          return Results.Problem(
+              detail: ex.Message,
+              statusCode: 500,
+              title: "Fetching pinging Callee",
+              type: ""
+          );
     }
 })
-.WithName("GetToken")
-.WithOpenApi();
-
-app.MapGet("/ping", () => {
-    return new {status = "pong"};
-}).WithName("GetPing")
+.WithName("RemotePing")
 .WithOpenApi();
 
 app.Run();
 
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
-record ApiResponse(IEnumerable<WeatherForecast> data, string requestUri, string? token, string? ex) {
-    public JwtSecurityToken? jwt => string.IsNullOrEmpty(token) ? default : new JwtSecurityTokenHandler().ReadJwtToken(token);
-}
-
 public static class TokenHelper
 {
-    public static async Task<AccessToken> GetToken(IConfiguration configuration, TokenCredential credential, string? scope)
+    public static async Task<AccessToken> GetToken(IConfiguration configuration, TokenCredential credential, string scope)
     {
-        return await credential.GetTokenAsync(new TokenRequestContext(scopes: new[] { scope ?? configuration["DefaultScope"] }), new CancellationTokenSource().Token);
-
+        return await credential.GetTokenAsync(new TokenRequestContext(scopes: new[] { scope }), new CancellationTokenSource().Token);
     }
 }
